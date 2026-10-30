@@ -80,11 +80,20 @@ HTTPS URL. The host:
 
 Detailed setup instructions will come with the first release.
 
-> **Google verification.** Reading Gmail is a *restricted* Google scope. A
-> self-hosted instance for yourself, family or a small group can run as an
-> unverified app (users see a warning screen once, up to 100 users). Opening
-> an instance to the public requires Google's app verification and security
-> assessment.
+information-overlord is designed for **self-hosted and small-group
+instances**: you, your family, your team.
+
+> **Google verification.** Reading Gmail is a *restricted* Google scope.
+> - An instance for up to 100 users can run as an unverified Google app.
+>   Each user sees a warning screen once.
+> - Beyond that, users can **bring their own Google client**: an OAuth client
+>   from their own Google Cloud project, entered in their connection settings,
+>   so the host needs no verification.
+> - On a Google Workspace domain, an *internal* app needs no verification for
+>   that domain's users.
+> - Running a large public instance on the host's own client would require
+>   Google's app verification and an annual security assessment. That's not
+>   a goal of this project.
 
 ## Status
 

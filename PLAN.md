@@ -45,7 +45,9 @@ means configuring an upstream, not writing tools.
 ### Multi-user hosting
 
 One deployment serves many users (the same pattern as the author's
-ai-quotas app):
+ai-quotas app). The intended scale is **self-hosted and small trusted-group
+instances**: one person, a family, a team. Under 100 users, the host's Google
+OAuth app can stay unverified (see Gotchas):
 
 - Users **sign in with Google**. The host controls who can sign in with an
   email allowlist (`["*"]` for open sign-up).
@@ -107,6 +109,11 @@ through the proxy, and which known direct paths the user should turn off.
   model, not by encryption.
 - Transparent interception of traffic the agents aren't configured to send to
   the proxy.
+- **Running a large public instance.** Holding many strangers' full inbox
+  contents is a serious responsibility, and Gmail's restricted scopes would
+  require Google verification plus an annual security assessment. Nothing
+  prevents someone from doing it, but the project won't be designed around
+  it.
 
 ## Client compatibility (researched 2026-10-24, not yet verified)
 
@@ -151,7 +158,14 @@ issued token is bound to that user and a named agent.
 2. **Connections (upstreams per user).**
    - Built-in **Google** connection. It's a separate consent step from sign-in
      that asks for the Gmail, Calendar and Drive scopes the user chooses
-     (read-only by default).
+     (read-only by default). By default it uses the host's OAuth client.
+   - **Bring your own Google client** (advanced). A user can paste the
+     client ID and secret of an OAuth client from their own Google Cloud
+     project. The connection then authorizes against that client, so the
+     user's consent never counts against the host's 100-user unverified
+     limit and no host verification is needed. The connection page links a
+     step-by-step setup guide (create project, enable APIs, consent screen in
+     production mode, web client with redirect `<origin>/connect/google/callback`).
    - **Custom MCP upstreams.** The user adds an MCP server URL and its
      credentials (bearer key or OAuth).
    - Credentials are encrypted at rest (AES-256-GCM, `tokenEncryptionKey`).
@@ -217,6 +231,7 @@ connections(                      -- a user's upstreams
   target text,                    -- MCP URL (for 'mcp')
   scopes text[],
   credentials_enc bytea,          -- AES-256-GCM
+  oauth_client_enc bytea,         -- optional bring-your-own Google client ID + secret
   parser text,
   created_at, revoked_at
 )
@@ -345,7 +360,15 @@ and full content is a separate, explicit read.
     *production, unverified*.
   - A public instance needs Google's app verification plus an annual
     third-party security assessment (CASA), which has real cost.
-  - Document this for hosts. Self-hosters use their own Google Cloud project.
+  - Ways to stay out of review: keep an instance under 100 users;
+    *bring your own client* for users beyond that (or anyone who prefers it);
+    or, on a Google Workspace domain, mark the app *internal*, which needs no
+    verification for that domain's users.
+  - Changing the *sign-in* method wouldn't help. Sign-in uses only basic
+    scopes. Review is triggered by Gmail data access, whatever the sign-in
+    method.
+  - Gmail over IMAP with app passwords would avoid OAuth but covers mail only
+    and is being steadily restricted by Google. Don't build on it.
   - Check Google's current rules before relying on any of this.
 - **Keep sign-in and data scopes separate.** Sign-in asks only for identity.
   Data scopes come from a separate "connect Google" step, so users who only
