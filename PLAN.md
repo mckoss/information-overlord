@@ -1,13 +1,13 @@
-# Information Overlord — Plan
+# information-overlord — Plan
 
 ## Purpose
 
-**An audit trail of AI agents' access to my personal data.**
+**An audit trail of AI agents' access to people's personal data.**
 
-I use several AI agents: Hermes (self-hosted, persistent), OpenAI dots, Meta
-Muse, and Claude Code. Each one connects to my email, calendar, files and
-memory in its own way, and each logs that access differently or not at all. I
-want to be able to answer:
+People now use several AI agents: hosted ones (Claude, ChatGPT agents such as
+dots, Meta Muse) and self-hosted harnesses (Hermes, Claude Code). Each one
+connects to email, calendar, files and memory in its own way, and each logs
+that access differently or not at all. A user should be able to answer:
 
 - Which agents read my inbox this week, and exactly what did they see?
 - Who touched this message, event, file or memory, and when?
@@ -16,18 +16,18 @@ want to be able to answer:
 
 ## Method: a logging proxy and a traffic analyzer
 
-No agent holds my real credentials. Every agent reaches my data through a
-proxy that I run. The proxy passes each request to the real MCP server or
-API and records the full request and response. A traffic analyzer turns that
-record into an audit trail I can search.
+No agent holds the user's real credentials. Every agent reaches the user's
+data through the proxy. The proxy passes each request to the real MCP server
+or API and records the full request and response. A traffic analyzer turns
+that record into an audit trail the user can search.
 
 ```
                          ┌────────────────────────────────┐
  Hermes ─┐  MCP          │  information-overlord (Railway) │      upstream MCP servers
  Claude ─┤ ─────────────▶│                                │────▶ (Gmail, Calendar, Drive,
- dots   ─┤               │  proxy:  identify agent        │       memory, …)
+ dots   ─┤               │  proxy:  identify user + agent │       memory, …)
  Muse   ─┤  HTTP API     │          apply rules           │
- scripts ┘ ─────────────▶│          add real credentials  │────▶ REST APIs
+ scripts ┘ ─────────────▶│          add user's credentials│────▶ REST APIs
            agent key     │          record full traffic   │      (Google, …)
            only          │                                │
                          │  analyzer: parse resource IDs  │
@@ -35,14 +35,36 @@ record into an audit trail I can search.
                          │            alerts              │
                          └───────────────┬────────────────┘
                                          │
-                        Postgres: events & resource index (kept forever)
+                        Postgres: users, events & resource index (kept forever)
                                   payloads (90-day rolling, full-text searchable)
 ```
 
 The proxy doesn't implement Gmail or Calendar itself. Adding a data source
 means configuring an upstream, not writing tools.
 
-### What makes the trail complete
+### Multi-user hosting
+
+One deployment serves many users (the same pattern as the author's
+ai-quotas app):
+
+- Users **sign in with Google**. The host controls who can sign in with an
+  email allowlist (`["*"]` for open sign-up).
+- Each user connects **their own** data sources, creates **their own** agent
+  keys, and sees **only their own** audit trail. Every query is scoped by
+  `user_id`.
+- **Admins** can see users, their connections and stored volume on `/admin`,
+  but never their credentials or recorded payloads.
+- Users can delete their history or their whole account.
+- Public home, `/privacy` and `/terms` pages, as Google requires for a
+  published OAuth app.
+
+**Trust model:** payloads are stored as plain text so they can be searched.
+Whoever operates the instance (anyone with database access) can read every
+user's recorded data and use their connected credentials. The README says so
+plainly. Users should use an instance run by someone they trust, or host
+their own.
+
+### What makes a user's trail complete
 
 The proxy only sees traffic routed through it. It can't intercept a vendor's
 own HTTPS connections to Google. Coverage is complete only when both of these
@@ -53,29 +75,27 @@ hold:
 2. **Direct connectors are turned off.** That includes the claude.ai Gmail,
    Calendar and Drive connectors and Muse's built-in Google connector.
 
-The dashboard keeps a **coverage list** (which agents and which sources go
-through the proxy, and which known direct paths are still open), so gaps are
-visible and not just assumed away.
+Each user's dashboard has a **coverage checklist**: which agents and sources go
+through the proxy, and which known direct paths the user should turn off.
 
 ## Goals
 
-1. **Full-fidelity record.** Every call is recorded: agent, session,
+1. **Full-fidelity record.** Every call is recorded: user, agent, session,
    self-reported skill, upstream, tool or endpoint, full request, full
    response, status, timing. Denied and failed calls are recorded too.
 2. **Search by resource.** Parse responses to pull out resource IDs (Gmail
-   message or thread, calendar event, Drive file, memory), so I can ask "who
-   touched X?" and not just "who called URL Y?".
-3. **Tamper evidence.** The log can only be added to, and each event is
-   hash-chained to the one before it, so an agent (or anyone who compromises
-   the proxy's app role) can't quietly rewrite history.
-4. **Works with hosted agents.** The proxy has a public HTTPS endpoint, so
-   dots, Muse and claude.ai can reach it from their vendors' clouds.
+   message or thread, calendar event, Drive file, memory), so a user can ask
+   "who touched X?" and not just "who called URL Y?".
+3. **Tamper evidence.** The log can only be added to, and each user's events
+   are hash-chained to the one before, so history can't be quietly rewritten.
+4. **Works with hosted agents.** A public HTTPS endpoint, so dots, Muse and
+   claude.ai can reach it from their vendors' clouds.
 5. **Supports both styles of agent.** MCP tool calls, *and* agent-written
-   scripts calling a plain HTTP API. Scripts make fewer model round trips and
-   send less data through the model, and the audit trail is the same for both.
-6. **Optional controls.** Per-agent allowlists and approval of sensitive
-   writes. These are secondary to the audit trail but come cheap once all
-   traffic passes through one place.
+   scripts calling a plain HTTP API (fewer model round trips, less data sent
+   through the vendor's model). The audit trail is the same for both.
+6. **Multi-user with strict isolation** between users.
+7. **Optional controls.** Per-agent allowlists and approval of sensitive
+   writes.
 
 ## Non-goals
 
@@ -83,7 +103,8 @@ visible and not just assumed away.
   cloud. The trail records access.
 - Preventing prompt injection inside content. Approvals on writes are the
   mitigation.
-- Multi-user or multi-tenant support. This is for one person.
+- Protecting users from the instance operator. That's handled by the trust
+  model, not by encryption.
 - Transparent interception of traffic the agents aren't configured to send to
   the proxy.
 
@@ -91,225 +112,225 @@ visible and not just assumed away.
 
 | Client | Reaches proxy from | Auth it supports | Status |
 |---|---|---|---|
-| Hermes | My host | Bearer key | Fully under my control |
-| Claude Code (local) | My machine | Bearer header or OAuth; can also write scripts against the HTTP API | Documented |
+| Hermes | User's host | Bearer key | Fully under the user's control |
+| Claude Code (local) | User's machine | Bearer header or OAuth; can also write scripts against the HTTP API | Documented |
 | claude.ai / Claude cloud | Anthropic cloud | OAuth 2.1 (DCR + PKCE) | Documented |
 | OpenAI dots | OpenAI cloud | OAuth only; dev-mode plugin at chatgpt.com/plugins | **Unconfirmed** that dots use dev-mode plugins; Pro may be read-only |
 | Meta Muse | Meta cloud | Bearer key via secure credential prompt works best; OAuth unreliable | **Unconfirmed**: added through a chat-built "custom connector" |
 
 So the proxy must accept **both** per-agent bearer keys **and** OAuth 2.1.
+In the OAuth flow, users authenticate with the same Google sign-in, and the
+issued token is bound to that user and a named agent.
 
 ## Architecture
 
-### Stack (proposed)
+### Stack (proposed, matching ai-quotas)
 
-- **TypeScript on Node** with the official MCP SDK (`@modelcontextprotocol/sdk`)
-  for both the server side (facing agents) and the client side (facing
-  upstreams). Streamable HTTP transport.
-- **Postgres** on Railway for everything: event metadata, resource index,
-  config, and payloads (in a table partitioned by day). One store keeps
-  operations simple and makes payload content searchable. If volume ever
-  outgrows it, payloads can move to object storage (a Railway bucket) later.
+- **SvelteKit (adapter-node) and TypeScript** for the dashboard and the HTTP
+  endpoints. The official MCP SDK (`@modelcontextprotocol/sdk`) handles the
+  agent-facing `/mcp` endpoint (Streamable HTTP) and the client connections to
+  upstreams.
+- **Postgres** for everything: users, config, events, resource index, and
+  payloads (in a table partitioned by day). If volume ever outgrows it,
+  payloads can move to object storage later.
 - **Railway** hosting, deployed from GitHub pushes to `main`.
-- Version in `package.json`, shown in the dashboard header and returned by a
-  `whoami` tool.
+- **Configuration in one JSON document**, as in ai-quotas: `config.json`
+  locally, the `CONFIG_JSON` variable in production, pushed with
+  `npm run config:push`. Keys include `databaseUrl`, `origin`,
+  `sessionSecret`, `tokenEncryptionKey`, `google.clientId/clientSecret`,
+  `allowedEmails`, `admins`, `contactEmail`, `payloadRetentionDays`
+  (default 90).
+- gitleaks in CI; no secrets in the repo.
+- Version in `package.json`, shown in the site header and in `/healthz`, and
+  returned by a `whoami` tool.
 
 ### Components
 
-1. **Agent-facing front doors** (both share auth, rules and recording):
-   - **MCP endpoint:** `/mcp`. The tools are the union of the upstream MCP
-     servers' tools, with namespaced names (`gmail.search`, `memory.read`).
-     Tool descriptions are passed through and kept short, to limit context
-     cost.
+1. **Accounts.** Google sign-in using only the `openid email profile` scopes,
+   gated by `allowedEmails`. Session cookies are random tokens, stored hashed.
+2. **Connections (upstreams per user).**
+   - Built-in **Google** connection. It's a separate consent step from sign-in
+     that asks for the Gmail, Calendar and Drive scopes the user chooses
+     (read-only by default).
+   - **Custom MCP upstreams.** The user adds an MCP server URL and its
+     credentials (bearer key or OAuth).
+   - Credentials are encrypted at rest (AES-256-GCM, `tokenEncryptionKey`).
+     Refreshes happen under a row lock so two instances never both spend a
+     rotating refresh token (the same pattern as ai-quotas).
+3. **Agent-facing front doors** (both share auth, rules and recording):
+   - **MCP endpoint:** `/mcp`. The tools are the union of *that user's*
+     upstream tools, with namespaced names (`gmail.search`, `memory.read`).
+     Tool descriptions are kept short to limit context cost.
    - **HTTP API proxy:** `/api/<upstream>/...`, e.g.
-     `/api/google/gmail/v1/users/me/messages`. It forwards with the real
-     credentials added. `/api/openapi.json` lists what's available, so
-     agents can write scripts against it.
-2. **Identity.** Each request resolves to an `agent_id`.
-   - Bearer keys: random, stored hashed, one per agent, revocable.
-   - OAuth 2.1 for dots and claude.ai: a well-tested library or a hosted
-     identity service that supports MCP dynamic client registration (WorkOS
-     AuthKit, Stytch, Auth0). Decide in stage 4.
+     `/api/google/gmail/v1/users/me/messages`. It forwards with the user's
+     credentials added. `/api/openapi.json` lists what's available so agents
+     can write scripts.
+4. **Agent identity.** Each request resolves to `(user_id, agent_id)`.
+   - Bearer keys: 256-bit random, shown once, stored hashed, revocable.
+   - OAuth 2.1 for dots and claude.ai: the user signs in with Google during
+     the flow and picks or creates the agent the token belongs to.
    - Optional `X-Agent-Session` and `X-Agent-Skill` headers, or matching MCP
-     metadata, recorded as **self-reported**. Hermes skills are expected to
-     set them.
-3. **Upstream registry.** Configuration for each upstream: kind (MCP or
-   HTTP), URL or command, how its credentials are added, and which parser to
-   use for its traffic.
-4. **Credential vault.** Upstream secrets (the Google refresh token, API
-   keys), encrypted at rest with a key held in a Railway variable, refreshed
-   automatically. Agents never see them.
+     metadata, recorded as **self-reported**.
 5. **Recorder.** Writes the event row before forwarding (so failed and
-   timed-out calls are still captured), then completes it with the response.
-   Payloads go to the day-partitioned `payloads` table.
+   timed-out calls are still captured), then completes it with the response
+   and payload. Credential headers are removed from recorded payloads.
 6. **Parsers.** Small, per-upstream modules that turn request and response
-   into resource references (`gmail:msg/<id>`, `gmail:thread/<id>`,
-   `gcal:event/<id>`, `drive:file/<id>`, `memory:<id>`) and an access kind
-   (`list`, `read-metadata`, `read-content`, `write`, `delete`, `send`).
-   Unknown traffic is still recorded, just not indexed by resource.
+   into resource references (`gmail:msg/<id>`, `gcal:event/<id>`,
+   `drive:file/<id>`, `memory:<id>`) and an access kind (`list`,
+   `read-metadata`, `read-content`, `write`, `delete`, `send`). Unknown
+   traffic is still recorded, just not indexed by resource.
 7. **Rules.** Per-agent allowlist by upstream and tool or endpoint, plus a
    mode for each: `allow` (default), `approve`, or `deny`. An approval returns
-   "pending" immediately and doesn't block, so scripts don't hang. The agent
-   retries with the approval ID.
-8. **Analyzer and dashboard.** An authenticated web UI:
+   "pending" immediately and doesn't block. The agent retries with the
+   approval ID.
+8. **Dashboard** (per user):
    - Timeline filtered by agent, upstream, tool, resource and time.
-   - A page per resource: every access to one message, event or file.
-   - A page per agent: volume over time, the sources it touches, the tools it
-     uses.
-   - The full request and response for any event still inside the payload
-     window.
-   - The coverage list (see above).
-   - Full-text search over payload content within the window (Postgres
-     `tsvector`).
-9. **Alerts.** Simple rules over the event stream: volume spikes compared with
-   an agent's baseline, first access to a new upstream or tool, any `send` or
-   `delete`, access at unusual hours. Delivered by push notification.
-10. **Retention job.** Each day, drop the payload partition that has passed
-    **90 days** (instant, no table bloat) and mark its events
-    `payload_pruned`. Event metadata, resource
-    references and payload hashes are kept forever.
+   - A page per resource ("who touched this?").
+   - A page per agent: volume over time, sources and tools used.
+   - The full request and response for any event inside the retention
+     window, plus full-text search over payloads.
+   - The coverage checklist.
+   - Pages to manage connections, agents and keys, rules and approvals.
+   - Account page: delete history, delete account.
+9. **Alerts.** Per-user rules: volume spikes compared with an agent's
+   baseline, first access to a new upstream or tool, any `send` or `delete`,
+   access at unusual hours. Delivered by email or push notification.
+10. **Admin** (`/admin`): users, connections, agent counts and storage per
+    user. No payloads or credentials.
+11. **Retention job.** Each day, drop the payload partition that has passed
+    `payloadRetentionDays` (instant, no table bloat) and mark its events
+    `payload_pruned`. Event metadata, resource references and hashes are kept
+    until the user deletes them.
 
 ### Data model (first draft)
 
+Every table except `users` carries `user_id`, and every query filters on it.
+
 ```sql
+users(id uuid pk, email text unique, name text, created_at, last_seen_at, deleted_at)
+sessions(token_hash text pk, user_id, created_at, expires_at)
+
+connections(                      -- a user's upstreams
+  id uuid pk, user_id,
+  kind text,                      -- 'google' | 'mcp'
+  label text,                     -- 'gmail', 'work-notion', …
+  target text,                    -- MCP URL (for 'mcp')
+  scopes text[],
+  credentials_enc bytea,          -- AES-256-GCM
+  parser text,
+  created_at, revoked_at
+)
+
 agents(
-  id text primary key,            -- 'hermes', 'claude-code', 'dots', 'muse'
-  display_name text,
+  id uuid pk, user_id,
+  name text,                      -- 'hermes', 'claude-code', 'dots', 'muse'
   auth_kind text,                 -- 'bearer' | 'oauth'
   key_hash text,
-  created_at timestamptz, revoked_at timestamptz
+  created_at, revoked_at
 )
 
-upstreams(
-  id text primary key,            -- 'gmail', 'gcal', 'google-api', 'memory'
-  kind text,                      -- 'mcp' | 'http'
-  target text,                    -- URL or launch command
-  credential_ref text,
-  parser text
-)
-
-events(                           -- append-only: the app role has INSERT/SELECT only;
-  id bigserial primary key,       --   completion goes to event_results
-  at timestamptz not null default now(),
-  agent_id text not null,
-  session_id text,                -- self-reported
-  skill text,                     -- self-reported
+events(                           -- append-only: the app role has INSERT/SELECT
+  id bigserial pk,                --   (plus DELETE only via account/history deletion)
+  user_id, agent_id,
+  at timestamptz default now(),
+  session_id text, skill text,    -- self-reported
   front_door text,                -- 'mcp' | 'http'
-  upstream_id text,
+  connection_id uuid,
   operation text,                 -- tool name, or 'GET /gmail/v1/…'
   decision text,                  -- 'allowed' | 'denied' | 'pending' | 'approved' | 'rejected'
   request_hash text,
-  prev_hash text,                 -- hash chain for tamper evidence
-  chain_hash text
+  prev_hash text, chain_hash text -- per-user hash chain
 )
 
 event_results(
-  event_id bigint primary key,
-  completed_at timestamptz,
-  status text,                    -- 'ok' | 'error' | 'timeout'
-  error text,
-  duration_ms int,
-  response_hash text,
-  response_bytes int,
+  event_id pk, user_id,
+  completed_at, status text, error text, duration_ms int,
+  response_hash text, response_bytes int,
   payload_pruned_at timestamptz
 )
 
-payloads(                         -- PARTITION BY RANGE (day); a partition is dropped after 90 days
-  event_id bigint,
-  day date,
-  request jsonb,                  -- body + headers, credential headers removed
-  response jsonb,
-  truncated boolean,
-  search tsvector                 -- full-text index over request and response text
+payloads(                         -- PARTITION BY RANGE (day)
+  event_id, user_id, day date,
+  request jsonb, response jsonb, truncated boolean,
+  search tsvector
 )
 
-resource_refs(                    -- the "who touched X" index
-  event_id bigint,
-  resource text,                  -- 'gmail:msg/18c…'
-  access text                     -- 'list' | 'read-metadata' | 'read-content' | 'write' | 'delete' | 'send'
-)
-
-approvals(
-  id bigserial primary key,
-  event_id bigint,
-  requested_at timestamptz, decided_at timestamptz,
-  decision text, decided_via text
-)
-
-alerts(id bigserial primary key, at timestamptz, rule text, agent_id text, event_ids bigint[], acknowledged_at timestamptz)
+resource_refs(event_id, user_id, resource text, access text)   -- "who touched X"
+rules(id, user_id, agent_id, connection_id, operation_pattern text, mode text)
+approvals(id, user_id, event_id, requested_at, decided_at, decision text, decided_via text)
+alerts(id, user_id, at, rule text, agent_id, event_ids bigint[], acknowledged_at)
 ```
+
+User deletion: a user may delete their own events. That breaks the hash
+chain, so deletion records a chain checkpoint. Tamper evidence protects
+against the *app or an agent* rewriting history, not against the user
+deleting their own data.
 
 ### Payload storage
 
-- **Content:** the full request and response bodies plus headers, with
-  credential headers removed.
 - **Where:** Postgres, in a table partitioned by day. Postgres compresses
   large values automatically.
-- **No application-level encryption.** Payloads are stored as plain text so
-  they can be searched. Protection comes from Railway's database security,
-  a database that isn't publicly exposed, and the dashboard login. (Decided
-  2026-10-30.)
-- **Retention:** 90 days rolling, pruned daily. Hashes stay forever, so a
-  payload I've exported can still be verified against the trail later.
-- **Size check:** rough personal volume is a few thousand calls a day at about
-  20 KB each: about 50 MB a day, or about 5 GB over 90 days. Occasionally an agent
-  will read thousands of messages, so track bytes per day on the dashboard to
-  keep storage cost visible.
+- **No application-level encryption** (decided 2026-10-30), so payloads are
+  searchable. Protection comes from Railway's database security, a database
+  that isn't publicly exposed, per-user query scoping, and the trust model
+  above.
+- **Retention:** `payloadRetentionDays`, default 90, pruned daily. Hashes stay,
+  so an exported payload can still be verified later.
+- **Size:** a rough per-user volume is a few thousand calls a day at about
+  20 KB each: about 50 MB a day, or about 5 GB per heavy user at 90 days. Admin
+  shows storage per user. A per-user quota is a later option.
 
 ### Data sent through MCP vs. scripts
 
 MCP tool calls send every intermediate result through the model, and each
 call is a model round trip. Agents that can run code are better off writing a
 script against the HTTP API. The script runs once, filters on the proxy side,
-and only its output reaches the model. That's cheaper, faster, and **sends
-less of my data to the vendor's model**. The audit trail is identical either
-way, because every call still crosses the proxy. Tool design should follow
-from this: search returns IDs and snippets, and full content is a separate,
-explicit read.
+and only its output reaches the model. That's cheaper, faster, and sends less
+of the user's data to the vendor's model. The audit trail is identical either
+way. Tool design should follow from this: search returns IDs and snippets,
+and full content is a separate, explicit read.
 
 ## Stages
 
-### Stage 1: MCP proxy and recorder (target: a weekend)
-- Repo scaffold, `package.json` at `0.1.0`, Railway service and Postgres.
-- Bearer-key agents; a CLI to issue and revoke keys.
-- An MCP proxy in front of **one existing Gmail MCP server**, with the Google
-  credentials held by the proxy.
-- The recorder, with full payloads, the hash chain, and the append-only role.
-- A minimal dashboard: event timeline plus event detail with payload.
+### Stage 1: Accounts, Gmail and the recorder
+- SvelteKit scaffold modeled on ai-quotas: `package.json` at `0.1.0`, config
+  loading, Postgres migrations, Railway service, gitleaks CI.
+- Google sign-in, allowlist, sessions; home, privacy and terms pages.
+- Google connection (Gmail read-only); credential encryption and refresh.
+- Agents page: create and revoke bearer keys.
+- `/mcp` proxy exposing Gmail tools (wrap an existing Gmail MCP server or call
+  the Gmail API directly; decide at the start of the stage).
+- The recorder, with full payloads and the per-user hash chain; timeline and
+  event detail pages.
 - Connect **Hermes** and **local Claude Code**.
-- **Done when:** every Gmail access by either agent shows up with its full
-  request and response.
+- **Done when:** two users can sign in, each connects Gmail, and each sees only
+  their own agents' Gmail access with full requests and responses.
 
 ### Stage 2: HTTP API proxy and parsers
-- `/api/google/...` passthrough with token injection, and `openapi.json`.
+- `/api/google/...` passthrough and `openapi.json`.
 - Parsers for Gmail, Calendar and Drive, filling `resource_refs`.
-- Resource page ("who touched X") and agent page.
-- **Done when:** a Claude Code script reading Gmail through the HTTP API and
-  an MCP tool call for the same message both show up on that message's page.
+- Resource page ("who touched X") and agent page; full-text search.
+- **Done when:** a script reading Gmail through the HTTP API and an MCP tool
+  call for the same message both show up on that message's page.
 
-### Stage 3: Analyzer, retention and coverage
-- Retention job (90 days), storage gauge.
-- Alert rules and push notifications.
-- Coverage list.
+### Stage 3: Analyzer, retention, coverage and admin
+- Retention job, storage view in admin, account and history deletion.
+- Alert rules and notifications.
+- Coverage checklist.
+- Custom MCP upstreams.
 - Connect **Muse** with a bearer key (verify the custom-connector flow).
-- **Done when:** an unusual spike in reads triggers an alert, and payloads
-  older than 90 days are gone while their events remain.
 
 ### Stage 4: OAuth 2.1 and rules
 - Protected-resource and authorization-server metadata, dynamic client
-  registration, PKCE, refresh.
-- Connect **claude.ai** and **dots**. Verify the plan limits and dev-mode
-  plugin support on dots.
-- Allowlists and approvals (`pending`, then retry with the approval ID).
-- Turn off direct Google connectors in every client.
-- **Done when:** all four agents go through the proxy and the coverage list
-  shows no known direct paths.
+  registration, PKCE, refresh, with Google sign-in as the login step.
+- Connect **claude.ai** and **dots** (verify plan limits and dev-mode
+  plugins).
+- Allowlists and approvals.
 
 ### Stage 5: Memory as an upstream
 - A memory MCP server that records where each memory came from (writing
   agent and skill, source resource IDs, derived-from memories). The proxy
   supplies "who read it".
-- Move Hermes's memory (or a slice of it) behind the proxy.
 
 ### Stage 6: Join in harness traces (optional)
 - Collect OpenTelemetry from Claude Code (`CLAUDE_CODE_ENABLE_TELEMETRY`) and
@@ -317,39 +338,49 @@ explicit read.
 
 ## Gotchas to remember
 
-- **Google OAuth app mode.** Gmail read is a restricted scope. In *testing*
-  mode refresh tokens expire after 7 days. Run the app in *production,
-  unverified* (personal use; one warning screen). Check Google's current rules
-  before relying on this.
-- **Opaque hosted clients.** Record full HTTP exchanges on the auth
+- **Google verification for restricted scopes.** Gmail read is a *restricted*
+  scope.
+  - An unverified app works for up to 100 users and shows a warning screen.
+  - In *testing* mode, refresh tokens expire after 7 days, so run the app in
+    *production, unverified*.
+  - A public instance needs Google's app verification plus an annual
+    third-party security assessment (CASA), which has real cost.
+  - Document this for hosts. Self-hosters use their own Google Cloud project.
+  - Check Google's current rules before relying on any of this.
+- **Keep sign-in and data scopes separate.** Sign-in asks only for identity.
+  Data scopes come from a separate "connect Google" step, so users who only
+  connect other upstreams never see restricted-scope warnings.
+- **Opaque hosted clients.** Record full HTTP exchanges on the OAuth
   endpoints too. It's the only way to debug dots and Muse when they fail to
   connect.
-- **High-value target.** The proxy holds my Google credentials *and* 90 days
-  of everything agents read from my inbox, on a public URL. Encrypt stored
-  credentials, keep the database off the public network, keep upstream scopes narrow, make agent keys easy to
-  rotate, require a separate strong login (passkey) for the dashboard, and
-  never return payloads through the agent-facing endpoints.
-- **Streaming and large responses.** Cap payload size per event (e.g. 5 MB) and
-  mark the event when a payload is truncated. Don't buffer huge streams in
-  memory.
+- **High-value target.** Users' Google credentials *and* 90 days of what
+  agents read, on a public URL. Encrypt credentials, keep the database off the
+  public network, keep upstream scopes narrow, make keys easy to rotate, never
+  return payloads through agent-facing endpoints, and test isolation between
+  users explicitly.
+- **Large responses.** Cap payload size per event (e.g. 5 MB), mark truncated
+  payloads, and don't buffer huge streams in memory.
 
 ## Open questions
 
-1. Does the Hermes skills repo already have a manifest or permissions format
-   that agent allowlists should reuse?
-2. Which existing Gmail MCP server to put behind the proxy in stage 1, or
-   should stage 1 go straight to the HTTP proxy for Google?
-3. Dashboard login: a passkey, or Google sign-in limited to my account?
-4. OAuth in stage 4: write it with a library, or use a hosted identity
+1. Stage 1: wrap an existing Gmail MCP server, or implement Gmail tools over
+   the Gmail API directly? With multiple users, the proxy has to pass each
+   user's token to a shared upstream server, which favors calling the API
+   directly for built-in Google sources.
+2. Does the Hermes skills repo have a manifest or permissions format that
+   agent allowlists should reuse?
+3. OAuth in stage 4: write it with a library, or use a hosted identity
    service?
+4. Per-user storage quotas: needed from the start, or only once there's a
+   public instance?
+5. Should approvals and alerts notify by email, web push, or both?
 
 ## Alternatives considered
 
 Hosted gateways (Zapier MCP, Composio, Arcade, Pipedream Connect) and
 open-source ones (Obot, Metorial, IBM ContextForge, small Go gateways). Their
 focus is *access management*. Logging is a secondary feature, usually
-metadata-only, and the hosted ones put a third party in the data path and keep
-the record themselves. This project's focus is *the audit trail itself*: full
-payloads, search by resource, tamper evidence, and analysis, under my own
-control. Obot is the fallback if the proxy layer turns out to be too much
-work.
+metadata-only, and the hosted ones keep the record themselves. This project's
+focus is *the audit trail itself*: full payloads, search by resource, tamper
+evidence and analysis, on an instance the user or someone they trust
+controls.
