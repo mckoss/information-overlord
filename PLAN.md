@@ -33,10 +33,10 @@ record into an audit trail I can search.
                          │  analyzer: parse resource IDs  │
                          │            search · dashboard  │
                          │            alerts              │
-                         └───────┬───────────────┬────────┘
-                                 │               │
-                        Postgres: events   Object storage: payloads
-                        (kept forever)     (encrypted, 90-day rolling)
+                         └───────────────┬────────────────┘
+                                         │
+                        Postgres: events & resource index (kept forever)
+                                  payloads (90-day rolling, full-text searchable)
 ```
 
 The proxy doesn't implement Gmail or Calendar itself. Adding a data source
@@ -106,9 +106,10 @@ So the proxy must accept **both** per-agent bearer keys **and** OAuth 2.1.
 - **TypeScript on Node** with the official MCP SDK (`@modelcontextprotocol/sdk`)
   for both the server side (facing agents) and the client side (facing
   upstreams). Streamable HTTP transport.
-- **Postgres** on Railway for event metadata, resource index and config.
-- **S3-compatible object storage** (a Railway bucket) for payloads,
-  compressed and encrypted per object.
+- **Postgres** on Railway for everything: event metadata, resource index,
+  config, and payloads (in a table partitioned by day). One store keeps
+  operations simple and makes payload content searchable. If volume ever
+  outgrows it, payloads can move to object storage (a Railway bucket) later.
 - **Railway** hosting, deployed from GitHub pushes to `main`.
 - Version in `package.json`, shown in the dashboard header and returned by a
   `whoami` tool.
@@ -140,8 +141,7 @@ So the proxy must accept **both** per-agent bearer keys **and** OAuth 2.1.
    automatically. Agents never see them.
 5. **Recorder.** Writes the event row before forwarding (so failed and
    timed-out calls are still captured), then completes it with the response.
-   Payloads go to object storage, gzipped and encrypted, addressed by
-   event ID.
+   Payloads go to the day-partitioned `payloads` table.
 6. **Parsers.** Small, per-upstream modules that turn request and response
    into resource references (`gmail:msg/<id>`, `gmail:thread/<id>`,
    `gcal:event/<id>`, `drive:file/<id>`, `memory:<id>`) and an access kind
@@ -159,12 +159,14 @@ So the proxy must accept **both** per-agent bearer keys **and** OAuth 2.1.
    - The full request and response for any event still inside the payload
      window.
    - The coverage list (see above).
-   - Search over payload content within the window.
+   - Full-text search over payload content within the window (Postgres
+     `tsvector`).
 9. **Alerts.** Simple rules over the event stream: volume spikes compared with
    an agent's baseline, first access to a new upstream or tool, any `send` or
    `delete`, access at unusual hours. Delivered by push notification.
-10. **Retention job.** Each day, delete payload objects older than **90 days**
-    and mark their events `payload_pruned`. Event metadata, resource
+10. **Retention job.** Each day, drop the payload partition that has passed
+    **90 days** (instant, no table bloat) and mark its events
+    `payload_pruned`. Event metadata, resource
     references and payload hashes are kept forever.
 
 ### Data model (first draft)
@@ -209,8 +211,16 @@ event_results(
   duration_ms int,
   response_hash text,
   response_bytes int,
-  payload_key text,               -- object-storage key; null once pruned
   payload_pruned_at timestamptz
+)
+
+payloads(                         -- PARTITION BY RANGE (day); a partition is dropped after 90 days
+  event_id bigint,
+  day date,
+  request jsonb,                  -- body + headers, credential headers removed
+  response jsonb,
+  truncated boolean,
+  search tsvector                 -- full-text index over request and response text
 )
 
 resource_refs(                    -- the "who touched X" index
@@ -233,15 +243,18 @@ alerts(id bigserial primary key, at timestamptz, rule text, agent_id text, event
 
 - **Content:** the full request and response bodies plus headers, with
   credential headers removed.
-- **Encryption:** each payload is gzipped, then encrypted with AES-GCM under a
-  data key held in a Railway variable. This protects against a leaked bucket
-  or database backup, not against a compromised proxy process. A later
-  option: encrypt payloads to a public key whose private key lives only in
-  the browser I use for the dashboard.
+- **Where:** Postgres, in a table partitioned by day. Postgres compresses
+  large values automatically.
+- **No application-level encryption.** Payloads are stored as plain text so
+  they can be searched. Protection comes from Railway's database security,
+  a database that isn't publicly exposed, and the dashboard login. (Decided
+  2026-10-30.)
 - **Retention:** 90 days rolling, pruned daily. Hashes stay forever, so a
   payload I've exported can still be verified against the trail later.
-- **Size check:** occasionally an agent will read thousands of messages. Track
-  bytes per day on the dashboard so storage cost stays visible.
+- **Size check:** rough personal volume is a few thousand calls a day at about
+  20 KB each: about 50 MB a day, or about 5 GB over 90 days. Occasionally an agent
+  will read thousands of messages, so track bytes per day on the dashboard to
+  keep storage cost visible.
 
 ### Data sent through MCP vs. scripts
 
@@ -257,8 +270,7 @@ explicit read.
 ## Stages
 
 ### Stage 1: MCP proxy and recorder (target: a weekend)
-- Repo scaffold, `package.json` at `0.1.0`, Railway service, Postgres and a
-  bucket.
+- Repo scaffold, `package.json` at `0.1.0`, Railway service and Postgres.
 - Bearer-key agents; a CLI to issue and revoke keys.
 - An MCP proxy in front of **one existing Gmail MCP server**, with the Google
   credentials held by the proxy.
@@ -314,12 +326,12 @@ explicit read.
   connect.
 - **High-value target.** The proxy holds my Google credentials *and* 90 days
   of everything agents read from my inbox, on a public URL. Encrypt stored
-  tokens and payloads, keep upstream scopes narrow, make agent keys easy to
+  credentials, keep the database off the public network, keep upstream scopes narrow, make agent keys easy to
   rotate, require a separate strong login (passkey) for the dashboard, and
   never return payloads through the agent-facing endpoints.
-- **Streaming and large responses.** Record payloads by streaming to object
-  storage, not by holding them in memory. Cap payload size per event and
-  mark the event when a payload is truncated.
+- **Streaming and large responses.** Cap payload size per event (e.g. 5 MB) and
+  mark the event when a payload is truncated. Don't buffer huge streams in
+  memory.
 
 ## Open questions
 
@@ -330,8 +342,6 @@ explicit read.
 3. Dashboard login: a passkey, or Google sign-in limited to my account?
 4. OAuth in stage 4: write it with a library, or use a hosted identity
    service?
-5. Should payload encryption move to a browser-held key (so a compromised
-   proxy can't read history)?
 
 ## Alternatives considered
 

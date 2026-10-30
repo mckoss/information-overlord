@@ -17,8 +17,8 @@ there's one complete, searchable record of what each agent accessed.
 - **Recorder.** Every request and response is recorded in full: agent,
   session, upstream, operation, payloads, timing. Denied and failed calls are
   recorded too. Event metadata is append-only, hash-chained, and kept
-  forever. Full payloads are encrypted and kept on a rolling **90-day**
-  window.
+  forever. Full payloads are kept, and searchable, on a rolling
+  **90-day** window.
 - **Analyzer.** Parsers pull out resource IDs, so you can ask "who touched
   this message?", see each agent's access over time, get alerts on unusual
   patterns, and view exactly what an agent saw.
@@ -28,7 +28,7 @@ there's one complete, searchable record of what each agent accessed.
 - **Optional controls.** Per-agent allowlists and approval of sensitive
   writes, enforced at the same point.
 
-It runs as a single service with Postgres and object storage. It's designed
+It runs as a single service backed by Postgres. It's designed
 for Railway, so cloud-hosted agents can reach it at a public HTTPS URL.
 
 ## Status
