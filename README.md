@@ -38,3 +38,7 @@ roadmap. No code yet.
 3. OAuth 2.1; claude.ai and dots connected.
 4. Memory with provenance.
 5. Optional: join in OpenTelemetry traces from the agents.
+
+## License
+
+[MIT](LICENSE)
