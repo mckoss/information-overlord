@@ -103,9 +103,9 @@ and roadmap.
 ## Roadmap
 
 1. MCP proxy and recorder; Google sign-in; Gmail connected; first agents.
-2. HTTP API proxy for agent scripts; "who touched this?" resource pages.
-3. Alerts, 90-day retention, coverage check.
-4. OAuth for hosted agents (claude.ai, ChatGPT); per-agent limits and
+2. OAuth for hosted agents (claude.ai, ChatGPT), plus Muse.
+3. HTTP API proxy for agent scripts; "who touched this?" resource pages.
+4. Alerts, 90-day retention, coverage checklist, per-agent limits and
    approvals.
 5. Agent memory as a recorded data source, tracking where each memory came
    from.

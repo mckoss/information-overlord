@@ -1,5 +1,30 @@
 # information-overlord — Plan
 
+## Status and next steps (as of 2026-10-31)
+
+**Paused for design thinking. No code yet.** Where the project stands:
+
+- Design so far: purpose, method (logging proxy plus traffic analyzer),
+  multi-user hosting on Railway, Postgres-only storage, 90-day searchable
+  payloads, small-instance scope with bring-your-own Google client.
+- Client research (2026-10-24 and 2026-10-30, below): the proxy can be
+  *added* to ChatGPT/dots, Muse and Claude, but no client guarantees it's the
+  *only* path to Gmail. Agent browsers and shells can go around it. The
+  strongest universal control is on Google's side.
+- That research moved OAuth (with Client ID Metadata Documents and DCR) from
+  stage 4 to stage 2.
+
+When picking this up again:
+
+1. Revisit the open design questions (see **Open questions**), especially
+   whether a "trail that may have gaps" (coverage checklist plus Google-side
+   backstop) is good enough, or whether the project needs a stronger answer
+   to browser bypass.
+2. Do the cheap manual experiments in **Drift tests** before writing code.
+   They decide which clients are worth supporting first.
+3. Then start stage 1 in a worktree.
+
+
 ## Purpose
 
 **An audit trail of AI agents' access to people's personal data.**
@@ -69,16 +94,25 @@ their own.
 ### What makes a user's trail complete
 
 The proxy only sees traffic routed through it. It can't intercept a vendor's
-own HTTPS connections to Google. Coverage is complete only when both of these
+own HTTPS connections to Google. Coverage is complete only when all of these
 hold:
 
 1. **The proxy holds the real credentials.** Agents only get revocable proxy
    keys.
-2. **Direct connectors are turned off.** That includes the claude.ai Gmail,
-   Calendar and Drive connectors and Muse's built-in Google connector.
+2. **Built-in connectors are removed.** Disconnect the account *and*
+   uninstall or remove the connector in each client.
+3. **Agent browsers and shells can't reach Gmail.** Never sign in to Google
+   in an agent's browser, block `mail.google.com` and `accounts.google.com`
+   where the client allows it, and keep Google credentials out of agent
+   shells.
+4. **Google-side backstop.** In the user's Google account (Security →
+   third-party access), the proxy's OAuth app is the only one with Gmail
+   access. This is the one control that applies to every client at once.
 
-Each user's dashboard has a **coverage checklist**: which agents and sources go
-through the proxy, and which known direct paths the user should turn off.
+Each user's dashboard has a **coverage checklist** built from the per-client
+items in **Client research** below. The agent page shows which items are done
+and which known direct paths remain open. The trail is honest about its
+gaps.
 
 ## Goals
 
@@ -115,19 +149,94 @@ through the proxy, and which known direct paths the user should turn off.
   prevents someone from doing it, but the project won't be designed around
   it.
 
-## Client compatibility (researched 2026-10-24, not yet verified)
+## Client research (2026-10-24, updated 2026-10-30)
 
-| Client | Reaches proxy from | Auth it supports | Status |
-|---|---|---|---|
-| Hermes | User's host | Bearer key | Fully under the user's control |
-| Claude Code (local) | User's machine | Bearer header or OAuth; can also write scripts against the HTTP API | Documented |
-| claude.ai / Claude cloud | Anthropic cloud | OAuth 2.1 (DCR + PKCE) | Documented |
-| OpenAI dots | OpenAI cloud | OAuth only; dev-mode plugin at chatgpt.com/plugins | **Unconfirmed** that dots use dev-mode plugins; Pro may be read-only |
-| Meta Muse | Meta cloud | Bearer key via secure credential prompt works best; OAuth unreliable | **Unconfirmed**: added through a chat-built "custom connector" |
+Sources were mostly official vendor docs (learn.chatgpt.com,
+developers.openai.com, code.claude.com, support.claude.com, meta.com/help,
+Meta's Muse security post), plus third-party guides where official docs say
+nothing. **[unverified]** marks claims that need a hands-on test.
 
-So the proxy must accept **both** per-agent bearer keys **and** OAuth 2.1.
-In the OAuth flow, users authenticate with the same Google sign-in, and the
-issued token is bound to that user and a named agent.
+### Summary
+
+| | ChatGPT / dots | Meta Muse | Claude (claude.ai, Cowork, Claude Code) | Hermes |
+|---|---|---|---|---|
+| **How it reaches Gmail by default** | Gmail plugin (Google sign-in); or its cloud browser, which it picks on its own | Built-in Google connector (Google sign-in, runs in Meta's sandboxed workers) | Anthropic's Gmail connector, also loaded into Claude Code and Cowork; Claude in Chrome | Whatever its skills use |
+| **Can the default be turned off?** | Yes: uninstall the plugin **and** disconnect the account; admins can disable it (Business/Enterprise) | Yes, in Settings → Connectors. No permanent block; Muse may offer to reconnect | Yes: disconnect on claude.ai; admins can block it; `disableClaudeAiConnectors` in Claude Code | Yes, the user controls it |
+| **How the proxy is added** | chatgpt.com/plugins → + → Add custom MCP server (web only) | Ask Muse in chat to create a custom connector; it writes an MCP client and saves it as a skill. A Settings form is claimed but **[unverified]** | Custom connector on claude.ai once and it syncs to Claude Code, Cowork and desktop; or `claude mcp add --transport http` locally | MCP config |
+| **Auth it supports** | **OAuth only**: static client, Client ID Metadata Documents, or DCR. No static bearer token | Bearer key via secure credential prompt | OAuth: Client ID Metadata Documents (recommended), DCR or static client. Bearer headers only in a limited beta. Claude Code: bearer header or OAuth | Bearer key |
+| **Calls come from** | OpenAI cloud (public URL, or OpenAI Secure MCP Tunnel) | Meta cloud, via its Sentinel forward proxy (public URL) | Anthropic cloud, even for Desktop and Cowork (public URL, or Anthropic MCP tunnels); local Claude Code calls directly | User's host |
+| **Plan limits** | Dots: Pro 100/200/500, Business Premium, Enterprise. Custom MCP: full on Business/Enterprise; Pro read-only **[unverified]**; Plus unreliable | US, adults only; no documented limit on custom connectors | All plans; Free limited to one custom connector; on Team/Enterprise only Owners add connectors | None |
+| **Main ways around the proxy** | Cloud browser logging into gmail.com, with sessions that persist and saved passwords; a connected local computer | VM browser with saved passwords; Muse's own email address (forwarded mail); its own code with an app password | Claude in Chrome or Cowork's browser using the user's Google session; shell running curl with the user's credentials; another Gmail MCP server | Its skills' code |
+| **Closing those** | Per-site block in cloud-browser settings (whether it covers dots is **[unverified]**); admins can turn off the browser and computer use entirely; dots' Custom Rules are advice the dot tries to follow, *not* enforced | Weak: no documented per-domain block. Sentinel requires approval before data leaves once a task has read user data | Chrome site block list (Team/Enterprise; also covers Cowork's browser); sandbox network allowlist; deny rules (`mcp__claude_ai_Gmail__*`, Google API domains); `allowedMcpServers` by URL | Full control |
+| **Feasibility** | **Medium** (high on Business, low on Plus) | **Medium** (Muse Code: **high**) | **Medium-high** (Claude Code), **medium** (claude.ai, Cowork) | **High** |
+
+### Per-client notes
+
+**ChatGPT / dots**
+- The current docs call agent mode **ChatGPT Work** and connectors
+  **Plugins**. Dots use the plugins installed for the account; there's no
+  separate MCP URL for a dot.
+- Write tools ask for confirmation by default. Mark read tools with
+  `readOnlyHint` so they aren't treated as writes.
+- **[unverified]** Whether custom MCP plugins are actually used in Work cloud
+  tasks and by dots (older docs said agent mode didn't use custom apps).
+
+**Meta Muse**
+- No Meta page mentions MCP. Third-party guides say Muse writes a client with
+  the official MCP SDK over streamable HTTP and saves it as a skill.
+- Every call still reaches the proxy. A skill-name header (for example
+  `X-Muse-Skill`) can be requested from Muse but is only a self-reported
+  hint.
+- Muse can receive email at its own address. That path never touches the
+  proxy, so the checklist should say not to use it.
+- **Muse Code**, per third-party docs: `~/.config/muse/settings.json` with an
+  `mcp_servers` block (`streamable_http` with `url` and `headers`), and
+  `muse mcp login <server>` for OAuth. That's a cleaner fit, because the
+  config is the user's and not agent-written code.
+
+**Claude**
+- Claude Code loads claude.ai connectors only when signed in with a claude.ai
+  subscription. Gmail tools appear as `mcp__claude_ai_Gmail__<tool>`.
+- Ways to turn them off in Claude Code:
+  - `"disableClaudeAiConnectors": true`, or `ENABLE_CLAUDEAI_MCP_SERVERS=false`.
+  - A deny rule on `mcp__claude_ai_Gmail__*`.
+  - Managed `deniedMcpServers` (match by `serverUrl`).
+- **Catch:** `disableClaudeAiConnectors` also hides the user's own claude.ai
+  custom connector, so add the proxy locally with `claude mcp add` too.
+- None of those Claude Code settings affect the desktop app's local or SSH
+  sessions. There, only disconnecting on claude.ai or an org-level `blocked`
+  setting works.
+- Extra audit signals: PreToolUse/PostToolUse hooks (matcher
+  `mcp__<server>__.*`) and OpenTelemetry (`OTEL_LOG_TOOL_DETAILS=1`). Neither
+  covers claude.ai chat or Cowork's browser.
+
+### What this means for the design
+
+- **OAuth is required early.** ChatGPT accepts only OAuth, and on claude.ai
+  OAuth is the dependable option. Implement **Client ID Metadata Documents and
+  DCR** (both vendors support them), with Google sign-in as the login step.
+  Keep bearer keys for Hermes, Muse and local Claude Code.
+- **One claude.ai custom connector covers Claude Code, Cowork and desktop,**
+  which makes OAuth worth a lot.
+- **Streamable HTTP at `/mcp`**, with tools annotated (`readOnlyHint`).
+- The coverage checklist needs **per-client items** (see the table) and the
+  **Google-side backstop**.
+
+### Drift tests (manual, before or alongside stage 1)
+
+For each client: remove the built-in Gmail connector, connect only the proxy
+(or a test MCP server with one harmless `whoami` tool that logs every
+request), then ask the agent to "check my email". Record whether it:
+
+1. calls the proxy,
+2. falls back to its browser,
+3. offers to reconnect the built-in connector, or
+4. refuses.
+
+Also verify the **[unverified]** items: dots and Work actually call custom
+plugins; ChatGPT Pro's write limits; whether ChatGPT's per-site browser
+blocks apply to dots; Muse's exact connector flow; whether claude.ai
+Request headers are available to the account.
 
 ## Architecture
 
@@ -309,7 +418,9 @@ and full content is a separate, explicit read.
 
 ### Stage 1: Accounts, Gmail and the recorder
 - SvelteKit scaffold modeled on ai-quotas: `package.json` at `0.1.0`, config
-  loading, Postgres migrations, Railway service, gitleaks CI.
+  loading, Postgres migrations, Railway service.
+- GitHub Actions CI (check, tests, build, gitleaks) from day one, with the
+  Railway deploy gated on it (`checkSuites: true`).
 - Google sign-in, allowlist, sessions; home, privacy and terms pages.
 - Google connection (Gmail read-only); credential encryption and refresh.
 - Agents page: create and revoke bearer keys.
@@ -317,30 +428,35 @@ and full content is a separate, explicit read.
   the Gmail API directly; decide at the start of the stage).
 - The recorder, with full payloads and the per-user hash chain; timeline and
   event detail pages.
-- Connect **Hermes** and **local Claude Code**.
+- Connect **Hermes** and **local Claude Code** (bearer).
 - **Done when:** two users can sign in, each connects Gmail, and each sees only
   their own agents' Gmail access with full requests and responses.
 
-### Stage 2: HTTP API proxy and parsers
+### Stage 2: OAuth 2.1 for hosted clients
+- Protected-resource and authorization-server metadata, **Client ID Metadata
+  Documents** and **dynamic client registration**, PKCE, refresh, with Google
+  sign-in as the login step. The issued token is bound to the user and a named
+  agent.
+- Connect **claude.ai** as a custom connector (which also covers Claude Code,
+  Cowork and desktop) and **ChatGPT/dots** as a custom plugin.
+- Connect **Muse** with a bearer key.
+- Record full HTTP exchanges on the OAuth endpoints for debugging.
+- **Done when:** claude.ai, ChatGPT and Muse calls show up under their own
+  agent identities.
+
+### Stage 3: HTTP API proxy and parsers
 - `/api/google/...` passthrough and `openapi.json`.
 - Parsers for Gmail, Calendar and Drive, filling `resource_refs`.
 - Resource page ("who touched X") and agent page; full-text search.
 - **Done when:** a script reading Gmail through the HTTP API and an MCP tool
   call for the same message both show up on that message's page.
 
-### Stage 3: Analyzer, retention, coverage and admin
+### Stage 4: Analyzer, retention, coverage, rules and admin
 - Retention job, storage view in admin, account and history deletion.
+- Coverage checklist with per-client items and the Google-side backstop.
 - Alert rules and notifications.
-- Coverage checklist.
-- Custom MCP upstreams.
-- Connect **Muse** with a bearer key (verify the custom-connector flow).
-
-### Stage 4: OAuth 2.1 and rules
-- Protected-resource and authorization-server metadata, dynamic client
-  registration, PKCE, refresh, with Google sign-in as the login step.
-- Connect **claude.ai** and **dots** (verify plan limits and dev-mode
-  plugins).
 - Allowlists and approvals.
+- Custom MCP upstreams.
 
 ### Stage 5: Memory as an upstream
 - A memory MCP server that records where each memory came from (writing
@@ -348,8 +464,9 @@ and full content is a separate, explicit read.
   supplies "who read it".
 
 ### Stage 6: Join in harness traces (optional)
-- Collect OpenTelemetry from Claude Code (`CLAUDE_CODE_ENABLE_TELEMETRY`) and
-  Hermes, keyed by session ID, to show *why* next to *what*.
+- Collect OpenTelemetry from Claude Code (`CLAUDE_CODE_ENABLE_TELEMETRY`,
+  `OTEL_LOG_TOOL_DETAILS=1`) and Hermes, keyed by session ID, to show *why*
+  next to *what*.
 
 ## Gotchas to remember
 
@@ -392,11 +509,19 @@ and full content is a separate, explicit read.
    directly for built-in Google sources.
 2. Does the Hermes skills repo have a manifest or permissions format that
    agent allowlists should reuse?
-3. OAuth in stage 4: write it with a library, or use a hosted identity
-   service?
+3. OAuth in stage 2: write it with a library, or use a hosted identity
+   service? It must support Client ID Metadata Documents and DCR.
 4. Per-user storage quotas: needed from the start, or only once there's a
    public instance?
 5. Should approvals and alerts notify by email, web push, or both?
+6. **Is a trail with possible gaps good enough?** Agent browsers (ChatGPT
+   Work/dots, Muse, Claude in Chrome/Cowork) can reach gmail.com directly if
+   ever signed in. Options: accept it and rely on the checklist and the
+   Google-side backstop; detect it (for example, watch Google account
+   security activity for new agent sign-ins); or scope the project's promise
+   to "every access through the proxy" and say so plainly.
+7. Which client to support first after Hermes and Claude Code? The drift
+   tests should decide.
 
 ## Alternatives considered
 
